@@ -22,23 +22,11 @@ int main(void)
 
 	for (;;)
 	{
-		if (tx_ticks > 0) 
-		{
-			tx_ticks--;
-		}
-		else if (tx_ticks == 0)
-		{
-			LEDs_TurnOffLEDs(LEDS_LED2);
-		}
+		if (tx_ticks)	tx_ticks--;
+		else		LEDs_TurnOffLEDs(LEDS_LED2);
 									
-		if (rx_ticks > 0)
-		{
-			rx_ticks--;
-		}
-		else if (rx_ticks == 0)
-		{
-			LEDs_TurnOffLEDs(LEDS_LED1);
-		}
+		if (rx_ticks)	rx_ticks--;
+		else		LEDs_TurnOffLEDs(LEDS_LED1);
 			
 		MIDI_To_Arduino();
 		MIDI_To_Host();
@@ -123,24 +111,21 @@ void MIDI_To_Host(void)
 	// Select the MIDI IN stream
 	Endpoint_SelectEndpoint(MIDI_STREAM_IN_EPADDR);
 
-	if (Endpoint_IsINReady())
+	if (Endpoint_IsINReady() && mPendingMessageValid)
 	{
-		if (mPendingMessageValid == true)
-		{
-			mPendingMessageValid = false;
+		mPendingMessageValid = false;
 
-			// Write the MIDI event packet to the endpoint
-			Endpoint_Write_Stream_LE(&mCompleteMessage, sizeof(mCompleteMessage), NULL);
+		// Write the MIDI event packet to the endpoint
+		Endpoint_Write_Stream_LE(&mCompleteMessage, sizeof(mCompleteMessage), NULL);
 
-			// Clear out complete message
-			memset(&mCompleteMessage, 0, sizeof(mCompleteMessage)); 
+		// Clear out complete message
+		memset(&mCompleteMessage, 0, sizeof(mCompleteMessage)); 
 
-			// Send the data in the endpoint to the host
-			Endpoint_ClearIN();
+		// Send the data in the endpoint to the host
+		Endpoint_ClearIN();
 
-			LEDs_TurnOnLEDs(LEDS_LED2);
-			tx_ticks = TICK_COUNT; 
-		}
+		LEDs_TurnOnLEDs(LEDS_LED2);
+		tx_ticks = TICK_COUNT;
 	}
 
 }
@@ -196,19 +181,12 @@ ISR(USART1_RX_vect, ISR_BLOCK)
         mPendingMessage[0] = extracted;
 
         // Check for running status first
-        if (isChannelMessage(getTypeFromStatusByte(mRunningStatus_RX)))
+	// && If the status byte is not received, prepend it to the pending message
+        if (isChannelMessage(getTypeFromStatusByte(mRunningStatus_RX)) && extracted < 0x80)
         {
-            // Only these types allow Running Status
-
-            // If the status byte is not received, prepend it to the pending message
-            if (extracted < 0x80)
-            {
-                mPendingMessage[0]   = mRunningStatus_RX;
-                mPendingMessage[1]   = extracted;
-                mPendingMessageIndex = 1;
-            }
-            // Else we received another status byte, so the running status does not apply here.
-            // It will be updated upon completion of this message.
+		mPendingMessage[0]   = mRunningStatus_RX;
+		mPendingMessage[1]   = extracted;
+		mPendingMessageIndex = 1;
         }
 
         switch (getTypeFromStatusByte(mPendingMessage[0]))
@@ -233,7 +211,7 @@ ISR(USART1_RX_vect, ISR_BLOCK)
                 mPendingMessageExpectedLength = 0;
 
                 return;
-                break;
+		break;
 
             // 2 bytes messages
             case ProgramChange:
@@ -254,8 +232,6 @@ ISR(USART1_RX_vect, ISR_BLOCK)
                 break;
 
             case SystemExclusive:
-                break;
-
             case InvalidType:
             default:
                 // Something bad happened
@@ -286,38 +262,35 @@ ISR(USART1_RX_vect, ISR_BLOCK)
             mPendingMessageIndex++;
         }
     }
-    else
+    // First, test if this is a status byte
+    else if (extracted >= 0x80)
     {
-        // First, test if this is a status byte
-        if (extracted >= 0x80)
-        {
-            // Reception of status bytes in the middle of an uncompleted message
-            // are allowed only for interleaved Real Time message or EOX
-            switch (extracted)
-            {
-                case Clock:
-                case Start:
-                case Continue:
-                case Stop:
-                case ActiveSensing:
-                case SystemReset:
+	    // Reception of status bytes in the middle of an uncompleted message
+	    // are allowed only for interleaved Real Time message or EOX
+	    switch (extracted)
+	    {
+		case Clock:
+		case Start:
+		case Continue:
+		case Stop:
+		case ActiveSensing:
+		case SystemReset:
 
-                    // Here we will have to extract the one-byte message,
-                    // pass it to the structure for being read outside
-                    // the MIDI class, and recompose the message it was
-                    // interleaved into. Oh, and without killing the running status..
-                    // This is done by leaving the pending message as is,
-                    // it will be completed on next calls.
-           		 	mCompleteMessage.Event = MIDI_EVENT(0, getTypeFromStatusByte(extracted));
-            		mCompleteMessage.Data1 = extracted;
-                    mCompleteMessage.Data2 = 0;
-                    mCompleteMessage.Data3 = 0;
-                   	mPendingMessageValid   = true;
-                    return;
-                    break;
-                default:
-                    break;
-            }
+		    // Here we will have to extract the one-byte message,
+		    // pass it to the structure for being read outside
+		    // the MIDI class, and recompose the message it was
+		    // interleaved into. Oh, and without killing the running status..
+		    // This is done by leaving the pending message as is,
+		    // it will be completed on next calls.
+				mCompleteMessage.Event = MIDI_EVENT(0, getTypeFromStatusByte(extracted));
+			mCompleteMessage.Data1 = extracted;
+		    mCompleteMessage.Data2 = 0;
+		    mCompleteMessage.Data3 = 0;
+			mPendingMessageValid   = true;
+		    return;
+		    break;
+		default:
+		    break;
         }
 
         // Add extracted data byte to pending message
